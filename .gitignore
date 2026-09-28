@@ -1,0 +1,60 @@
+# =============================================================================
+# .gitignore — market-intel-whatsapp-service
+# =============================================================================
+
+# Environment / secrets
+.env
+.env.local
+.env.production
+secrets/
+*.secret
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Session data (EXTREMELY SENSITIVE — WhatsApp auth files)
+data/
+data/sessions/
+data/certs/
+data/webroot/
+.sessions/
+*.session
+
+# Backup archives
+backups/*.tar.gz
+backups/*.tar.gz.enc
+backups/*.gpg
+backups/*.zip
+
+# Logs
+logs/
+*.log
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Docker override files (may contain local secrets)
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Certbot live certificates
+data/certs/live/
+data/certs/archive/
+
+# Nginx temp / pid
+nginx/*.pid
+nginx/temp/
+
+# Node (if any utility scripts are added)
+node_modules/
+package-lock.json

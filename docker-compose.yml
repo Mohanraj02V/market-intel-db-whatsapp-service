@@ -1,0 +1,224 @@
+# =============================================================================
+# market-intel-whatsapp-service / docker-compose.yml
+#
+# PRODUCTION: Oracle Always Free ARM64
+# Image: devlikeapro/waha:noweb-arm
+#
+# LOCAL TESTING (Windows/macOS amd64):
+#   docker compose -f docker-compose.yml -f docker-compose.local.yml up waha -d
+#
+# SECURITY NOTES
+# ──────────────
+# • WAHA is NOT exposed to the public Internet.
+#   Nginx is the only public-facing service (443 + 80-redirect).
+# • The WAHA internal port (3000) is bind-mounted only on the internal network.
+# • Docker socket is NOT mounted.
+# • ADB is NOT exposed.
+# • All secrets come from .env (never committed to Git).
+# • Session data lives in ./data/sessions (chmod 700, owner waha user).
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Named volume for WAHA persistent session storage.
+# Maps to ./data/sessions on the host so that sessions survive container
+# restarts AND can be backed up independently.
+# ---------------------------------------------------------------------------
+volumes:
+  waha_sessions:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${WAHA_SESSION_PATH:-./data/sessions}
+
+  nginx_certs:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${NGINX_CERT_PATH:-./data/certs}
+
+  nginx_webroot:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${NGINX_WEBROOT_PATH:-./data/webroot}
+
+networks:
+  # Internal bridge - only waha and nginx communicate here.
+  internal:
+    driver: bridge
+
+services:
+  # -------------------------------------------------------------------------
+  # WAHA -- WhatsApp HTTP API (ARM64 NOWEB engine)
+  #
+  # The NOWEB engine does NOT require Chromium, a browser, or an Android
+  # emulator.  It is the lightest correct choice for Oracle Free Tier ARM64.
+  #
+  # WAHA is only accessible from within the Docker internal network.
+  # External access requires going through Nginx on port 443.
+  # -------------------------------------------------------------------------
+  waha:
+    # ARM64 image for Oracle Always Free VM.
+    # For local amd64 testing use docker-compose.local.yml override.
+    image: devlikeapro/waha:noweb-arm
+    container_name: waha
+    restart: always
+
+    environment:
+      # -- Engine ------------------------------------------------------------
+      # NOWEB is the correct engine for the noweb-arm image.
+      WHATSAPP_DEFAULT_ENGINE: "${WAHA_ENGINE:-NOWEB}"
+
+      # -- API Security ------------------------------------------------------
+      # Use sha512-hashed API key for storage.
+      # Format: sha512:<hex-hash-of-plaintext-key>
+      # Generate:
+      #   PLAIN=<your-strong-api-key>
+      #   echo -n "$PLAIN" | sha512sum | awk '{print "sha512:" $1}'
+      WHATSAPP_API_KEY: "${WAHA_API_KEY}"
+
+      # -- Dashboard ---------------------------------------------------------
+      # Dashboard is only accessible through Nginx /dashboard/ path.
+      WAHA_DASHBOARD_ENABLED: "${WAHA_DASHBOARD_ENABLED:-true}"
+      WAHA_DASHBOARD_USERNAME: "${WAHA_DASHBOARD_USERNAME:-admin}"
+      WAHA_DASHBOARD_PASSWORD: "${WAHA_DASHBOARD_PASSWORD}"
+
+      # -- Session storage ---------------------------------------------------
+      # For NOWEB the session files are stored in /app/.sessions by default.
+      WHATSAPP_SESSIONS_PATH: "/app/.sessions"
+
+      # -- Webhook -----------------------------------------------------------
+      # WAHA will POST webhook events to this Django endpoint.
+      # Django verifies the HMAC signature on every incoming event.
+      WAHA_WEBHOOK_URL: "${DJANGO_WEBHOOK_URL}"
+      WAHA_WEBHOOK_EVENTS: "${WAHA_HOOK_EVENTS:-message,message.ack,session.status}"
+
+      # HMAC signing secret -- must match WHATSAPP_WEBHOOK_SECRET in Django.
+      WAHA_WEBHOOK_HMAC: "${WHATSAPP_WEBHOOK_SECRET}"
+
+      # -- Logging -----------------------------------------------------------
+      WAHA_LOG_LEVEL: "${WAHA_LOG_LEVEL:-info}"
+      WAHA_LOG_FORMAT: "${WAHA_LOG_FORMAT:-json}"
+
+      # -- Media -------------------------------------------------------------
+      WHATSAPP_FILES_PATH: "/app/.sessions/media"
+      WHATSAPP_FILES_LIFETIME: "${WAHA_MEDIA_LIFETIME_SECONDS:-3600}"
+
+    volumes:
+      - waha_sessions:/app/.sessions
+
+    networks:
+      - internal
+
+    # WAHA internal port is only accessible from within the Docker network.
+    # It is NOT published to the host or the public Internet.
+    expose:
+      - "3000"
+
+    # -- Resource limits (Oracle Free Tier: 2 OCPU / 12 GB RAM) -----------
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: "3G"
+        reservations:
+          cpus: "0.25"
+          memory: "512M"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  # -------------------------------------------------------------------------
+  # NGINX -- TLS termination, reverse proxy, security headers
+  #
+  # Nginx is the only container that binds public ports (80, 443).
+  # It terminates HTTPS and forwards /api/* to WAHA on the internal network.
+  # -------------------------------------------------------------------------
+  nginx:
+    image: nginx:stable-alpine
+    container_name: nginx
+    restart: always
+
+    ports:
+      - "80:80"
+      - "443:443"
+
+    volumes:
+      - ./nginx/whatsapp.conf:/etc/nginx/conf.d/whatsapp.conf:ro
+      - ./nginx/security_headers.conf:/etc/nginx/snippets/security_headers.conf:ro
+      - nginx_certs:/etc/letsencrypt:ro
+      - nginx_webroot:/var/www/certbot:rw
+
+    networks:
+      - internal
+
+    depends_on:
+      waha:
+        condition: service_healthy
+
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: "256M"
+        reservations:
+          cpus: "0.05"
+          memory: "64M"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health-check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # -------------------------------------------------------------------------
+  # CERTBOT -- Let's Encrypt certificate renewal (manual / profile)
+  #
+  # Run:  docker compose --profile certbot run --rm certbot
+  # The setup.sh script handles the initial certificate issuance.
+  # -------------------------------------------------------------------------
+  certbot:
+    image: certbot/certbot:latest
+    container_name: certbot
+    profiles:
+      - certbot
+
+    volumes:
+      - nginx_certs:/etc/letsencrypt:rw
+      - nginx_webroot:/var/www/certbot:rw
+
+    entrypoint: >
+      sh -c "certbot certonly
+        --webroot
+        --webroot-path=/var/www/certbot
+        --email ${CERTBOT_EMAIL}
+        --agree-tos
+        --no-eff-email
+        -d ${DOMAIN}
+        --non-interactive"
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"

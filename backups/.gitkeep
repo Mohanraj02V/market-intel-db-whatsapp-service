@@ -1,0 +1,7 @@
+# This directory stores encrypted backup archives.
+# Backup files are created by scripts/backup.sh.
+#
+# SECURITY:
+# - Backup archives are AES-256 encrypted.
+# - Never commit unencrypted backups to Git.
+# - Store the decryption passphrase securely and separately.
